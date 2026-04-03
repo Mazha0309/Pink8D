@@ -1,37 +1,44 @@
-import pickle
 import sys
 
-def run_ejac(file_path):
-    with open(file_path, 'rb') as f:
-        bytecode = pickle.load(f)
-
-    mem = [0] * 30000
+def run_vm(bytecode):
+    mem = [0] * 65536
     ptr = 0
     pc = 0
     
-    loop_map = {}
-    stack = []
-    for i, (op, val) in enumerate(bytecode):
-        if op == 0x05: stack.append(i) # OPEN
-        elif op == 0x06:
+    # 预加载循环索引
+    stack, loops = [], {}
+    i = 0
+    while i < len(bytecode):
+        op = bytecode[i] & 0x7F
+        if op == 0x01: stack.append(i)
+        elif op == 0x02:
             start = stack.pop()
-            loop_map[start] = i
-            loop_map[i] = start
+            loops[start], loops[i] = i, start
+        if op in [0x04, 0x05, 0x06, 0x07]: i += 1 # 跳过操作数
+        i += 1
 
     while pc < len(bytecode):
-        op, val = bytecode[pc]
-        if op == 0x01: mem[ptr] = (mem[ptr] + val) % 256
-        elif op == 0x02: mem[ptr] = (mem[ptr] - val) % 256
-        elif op == 0x03: ptr = (ptr + val) % 30000
-        elif op == 0x04: ptr = (ptr - val) % 30000
-        elif op == 0x07: sys.stdout.write(chr(mem[ptr])); sys.stdout.flush()
-        elif op == 0x08: 
-            char = sys.stdin.read(1)
-            mem[ptr] = ord(char) if char else 0
-        elif op == 0x05 and mem[ptr] == 0: pc = loop_map[pc]
-        elif op == 0x06 and mem[ptr] != 0: pc = loop_map[pc]
-        elif op == 0x09: ptr = mem[ptr] % 30000
+        raw_op = bytecode[pc]
+        op = raw_op & 0x7F
+        eject = raw_op & 0x80
+        
+        if op == 0x01: # 8{
+            if mem[ptr] == 0: pc = loops[pc]
+        elif op == 0x02: # }D
+            if mem[ptr] != 0: pc = loops[pc]
+        elif op == 0x03: # ~
+            mem[ptr] = ord(sys.stdin.read(1))
+        else:
+            pc += 1
+            val = bytecode[pc]
+            if op == 0x04: mem[ptr] = (mem[ptr] + val) % 256 # ADD
+            elif op == 0x05: mem[ptr] = (mem[ptr] - val) % 256 # SUB
+            elif op == 0x06: ptr = (ptr + val) % len(mem) # MOV_R
+            elif op == 0x07: ptr = (ptr - val) % len(mem) # MOV_L
+            
+            if eject: print(chr(mem[ptr]), end='', flush=True)
         pc += 1
 
 if __name__ == "__main__":
-    run_ejac(sys.argv[1])
+    if len(sys.argv) > 1:
+        with open(sys.argv[1], "rb") as f: run_vm(f.read())
