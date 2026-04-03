@@ -82,7 +82,7 @@ def main():
     # 调用 Arch 上的 Clang 进行优化编译
     subprocess.run(["clang", "-O3", c_file, "-o", base_name])
     os.remove(c_file) # 保持目录整洁
-    print(f"[*] 73! {base_name} compiled successfully.")
+    print(f"[*] success! {base_name} compiled successfully.")
 
 if __name__ == "__main__":
     main()
