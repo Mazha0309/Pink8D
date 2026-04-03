@@ -92,7 +92,7 @@
 }D
 
 // Add the decimal point manually.
-8========D 8========D 8========D 8==========D 8======D .D~ // Output '.'
+8========D 8========D 8========D 8==========D 8======D 8.D~ // Output '.'
 <===8 8.D
 
 // --- Block 4: The Digit Engine (Deep Loops) ---
