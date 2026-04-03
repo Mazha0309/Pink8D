@@ -212,8 +212,6 @@ Pink8D/
 
 MIT License
 
-## 🎙️ 73!
-
 > "The Essence is preserved."
 
 **BG5CRL** | Mazha0309 | 2026
