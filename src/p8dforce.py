@@ -4,61 +4,75 @@ import shutil
 import subprocess
 
 def compile_to_c(source_code):
-    # 初始化 C 语言模板
-    # 利用 unsigned char 和 unsigned short 的天然溢出特性，完美模拟活塞环绕
     c_code = """#include <stdio.h>
+#include <stdlib.h>
 
 unsigned char m[65536] = {0};
 unsigned short ptr = 0;
+FILE* current_hatch = NULL;
+FILE* h0 = NULL, *h1 = NULL, *h2 = NULL, *h3 = NULL;
 
 int main() {
 """
-    # 核心形态学正则 (兼容即时喷射)
-    pattern = r'8[=.]*D~?|8[=]*>~?|<[=]*8~?|8\{|\}D|~'
+    # 核心：正则顺序必须从长到短，防止 ~~ 被拆成 ~ 和 ~
+    pattern = r'8\[H\d:.*?\]D|8\[=*\]D|~~8D|8D~~|8[=.]*D~?|8[=]*>~?|<[=]*8~?|8\{|\}D|8\*D|~'
     tokens = re.findall(pattern, source_code)
 
     for token in tokens:
-        # 判定是否带有即时喷射后缀
-        eject = token.endswith('~')
+        # 1. 铭牌声明 (8[H0:file]D)
+        if 'H' in token and '[' in token:
+            m_hatch = re.search(r'H(\d)', token).group(1)
+            m_path = re.search(r':(.*?)\]', token).group(1)
+            
+            c_code += f"    h{m_hatch} = fopen(\"{m_path}\", \"rb+\");\n"
+            c_code += f"    if (!h{m_hatch}) h{m_hatch} = fopen(\"{m_path}\", \"wb+\");\n"
+            
+
+            if m_hatch == '0':
+                c_code += "    current_hatch = h0;\n"
+                c_code += "    if (h0) { int c = fgetc(h0); m[ptr] = (c == EOF) ? 0 : (unsigned char)c; }\n"
+            continue
+
+        # 2. 轨道切换 (8[=]D)
+        elif re.match(r'8\[=*\]D', token):
+            idx = token.count('=')
+            c_code += f"    current_hatch = h{idx};\n"
+            continue
+
+        # 3. 强力吸入 (~~8D)
+        elif token == '~~8D':
+            c_code += "    if (current_hatch) { int c = fgetc(current_hatch); m[ptr] = (c == EOF) ? 0 : (unsigned char)c; }\n"
+            continue
+
+        # 4. 强力灌注 (8D~~) -> 写入文件轨道的唯一方式
+        elif token == '8D~~':
+            c_code += "    if (current_hatch) { fputc(m[ptr], current_hatch); fflush(current_hatch); }\n"
+            continue
+
+        # 5. 即时喷射 (v2.0 后缀 ~) -> 只去 stdout
+        eject = token.endswith('~') and not token.endswith('~~')
         cmd = token[:-1] if eject else token
 
-        if cmd.startswith('8') and cmd.endswith('D') and '{' not in cmd and '}' not in cmd:
-            # 赋值指令
-            eq_count = cmd.count('=')
-            dot_count = cmd.count('.')
-            val = eq_count - dot_count
-            if val > 0:
-                c_code += f"    m[ptr] += {val};\n"
-            elif val < 0:
-                c_code += f"    m[ptr] -= {abs(val)};\n"
-        
-        elif cmd.startswith('8') and cmd.endswith('>'):
-            # 右向位移
-            dist = cmd.count('=') + 1
-            c_code += f"    ptr += {dist};\n"
-            
-        elif cmd.startswith('<') and cmd.endswith('8'):
-            # 左向回溯
-            dist = cmd.count('=') + 1
-            c_code += f"    ptr -= {dist};\n"
-            
-        elif cmd == '8{':
-            # 空腔开启
+        # 基础指令处理...
+        if cmd == '8{':
             c_code += "    while(m[ptr]) {\n"
-            
         elif cmd == '}D':
-            # 空腔封闭
             c_code += "    }\n"
-            
+        elif cmd.startswith('8') and cmd.endswith('D'):
+            val = cmd.count('=') - cmd.count('.')
+            if val != 0: c_code += f"    m[ptr] {'+=' if val > 0 else '-='} {abs(val)};\n"
+        elif cmd.startswith('8') and cmd.endswith('>'):
+            c_code += f"    ptr += {cmd.count('=') + 1};\n"
+        elif cmd.startswith('<') and cmd.endswith('8'):
+            c_code += f"    ptr -= {cmd.count('=') + 1};\n"
         elif cmd == '~':
-            # 单独吸入
             c_code += "    m[ptr] = getchar();\n"
 
-        # 触发即时喷射
         if eject:
             c_code += "    putchar(m[ptr]);\n"
 
     c_code += """
+    if(h0) fclose(h0); if(h1) fclose(h1); if(h2) fclose(h2); if(h3) fclose(h3);
     return 0;
 }
 """
@@ -66,54 +80,35 @@ int main() {
 
 def main():
     if len(sys.argv) < 2:
-        print("⚙️ Usage: python3 p8dforce.py <source.8d> [-c/--c-only]")
+        print("⚙️ Pink8D Force v3.0 | Usage: python3 p8dforce.py <src.8d> [-c]")
         sys.exit(1)
 
-    source_file = sys.argv[1]
-    c_only = len(sys.argv) > 2 and sys.argv[2] in ['-c', '--c-only']
+    with open(sys.argv[1], 'r') as f:
+        source = f.read()
 
-    try:
-        with open(source_file, 'r', encoding='utf-8') as f:
-            source = f.read()
-    except FileNotFoundError:
-        print(f"❌ Piston Jammed: File '{source_file}' not found.")
-        sys.exit(1)
-
-    # 1. 转译为 C 代码
     c_code = compile_to_c(source)
 
-    # 如果用户只想要 C 源码（比如为了调试）
-    if c_only:
+    if '-c' in sys.argv:
         print(c_code)
-        sys.exit(0)
+        return
 
-    # 2. 自动嗅探工业级编译器 (优先 clang)
+    # 自动嗅探编译器 (优先使用 clang，追求最高压入性能)
     compiler = "clang" if shutil.which("clang") else ("gcc" if shutil.which("gcc") else None)
     
     if not compiler:
-        print("⚠️ No clang or gcc detected! Ejecting C code instead:")
+        print("⚠️ No Industrial Compiler detected. Source Ejected.")
         print(c_code)
-        sys.exit(1)
+        return
 
-    out_bin = source_file.rsplit('.', 1)[0]
-    # Windows 环境下加上 .exe 后缀
-    if sys.platform == "win32":
-        out_bin += ".exe"
-        
-    print(f"⚙️ Force Ejecting with {compiler} (-O3)...")
+    out_bin = sys.argv[1].rsplit('.', 1)[0]
+    print(f"⚙️ Probing environment... Using {compiler}")
     
-    # 3. 管道直压编译，不产生临时 .c 文件
-    process = subprocess.Popen(
-        [compiler, "-x", "c", "-O3", "-", "-o", out_bin],
-        stdin=subprocess.PIPE
-    )
-    process.communicate(input=c_code.encode('utf-8'))
+    # 管道直压，-O3 榨取极限性能
+    proc = subprocess.Popen([compiler, "-x", "c", "-O3", "-", "-o", out_bin], stdin=subprocess.PIPE)
+    proc.communicate(input=c_code.encode('utf-8'))
 
-    if process.returncode == 0:
+    if proc.returncode == 0:
         print(f"🚀 Success! Logic injected into: {out_bin}")
-    else:
-        print("❌ Compilation jammed.")
-        sys.exit(1)
 
 if __name__ == "__main__":
     main()
