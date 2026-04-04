@@ -1,36 +1,27 @@
-import re
-import sys
-import struct
+import re, sys, struct
 
-# 指令映射表
-OP_MAP = { "8{": 0x01, "}D": 0x02, "~": 0x03, "ADD": 0x04, "SUB": 0x05, "MOV_R": 0x06, "MOV_L": 0x07 }
+# Opcode 定义
+OPS = {'8{': 0x01, '}D': 0x02, '8D': 0x03, '>': 0x04, '<': 0x05, 'SEL': 0x06, 'JMP': 0x07}
 
-def compile_to_bytecode(source):
-    tokens = re.findall(r'8[=.]*D~?|8[=]*>~?|<[=]*8~?|8\{|\}D|~', source)
-    bytecode = bytearray()
-
-    for t in tokens:
-        has_eject = 0x80 if t.endswith('~') else 0x00
-        cmd = t.rstrip('~')
+def compile_to_bytecode(path):
+    with open(path, 'r') as f: source = f.read()
+    tokens = re.findall(r'(~~|~)?(8[=\.]*[D>\}]|<[=\.]*8|8\*D|8\[=*\]D|8\{)(~~|~)?', source)
+    
+    binary = bytearray()
+    for pre, body, suf in tokens:
+        # 编码标记位: 00(无), 01(细管~), 10(粗管~~)
+        io_flag = (1 if pre=='~' else 2 if pre=='~~' else 0) << 4 | (1 if suf=='~' else 2 if suf=='~~' else 0)
+        binary.append(io_flag)
         
-        if cmd == "8{": bytecode.append(OP_MAP["8{"])
-        elif cmd == "}D": bytecode.append(OP_MAP["}D"])
-        elif cmd == "~": bytecode.append(OP_MAP["~"])
-        
-        # 编码逻辑：操作码 | 喷射位 (High Bit) + 力量值 (Payload)
-        elif cmd.startswith('8') and cmd.endswith('>'):
-            bytecode.extend([OP_MAP["MOV_R"] | has_eject, cmd.count('=') + 1])
-        elif cmd.startswith('<') and cmd.endswith('8'):
-            bytecode.extend([OP_MAP["MOV_L"] | has_eject, cmd.count('=') + 1])
-        elif cmd.startswith('8') and cmd.endswith('D'):
-            core = cmd[1:-1]
-            op = OP_MAP["ADD"] if '=' in core or not core else OP_MAP["SUB"]
-            val = core.count('=') if op == OP_MAP["ADD"] else core.count('.')
-            bytecode.extend([op | has_eject, val])
+        # 指令编码
+        if "8[" in body: binary.extend([OPS['SEL'], body.count('=')])
+        elif "8*" in body: binary.extend([OPS['JMP'], 0])
+        elif body == "8{": binary.extend([OPS['8{'], 0]) # 占位符，由 VM 处理跳转
+        elif body == "}D": binary.extend([OPS['}D'], 0])
+        elif "8" in body and "D" in body: binary.extend([OPS['8D'], (body.count('=') - body.count('.')) % 256])
+        elif ">" in body: binary.extend([OPS['>'], body.count('=')+1])
+        elif "<" in body: binary.extend([OPS['<'], body.count('=')+1])
+    
+    with open(path.replace('.8d', '.ejac'), 'wb') as f: f.write(binary)
 
-    return bytecode
-
-if __name__ == "__main__":
-    if len(sys.argv) > 1:
-        out = compile_to_bytecode(open(sys.argv[1]).read())
-        with open(sys.argv[1].split('.')[0] + ".ejac", "wb") as f: f.write(out)
+if __name__ == "__main__": compile_to_bytecode(sys.argv[1])
