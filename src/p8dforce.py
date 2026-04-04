@@ -1,87 +1,119 @@
-import re
 import sys
+import re
+import shutil
+import subprocess
 
-def compile_p8d(source_path):
-    with open(source_path, 'r') as f:
-        source = f.read()
+def compile_to_c(source_code):
+    # 初始化 C 语言模板
+    # 利用 unsigned char 和 unsigned short 的天然溢出特性，完美模拟活塞环绕
+    c_code = """#include <stdio.h>
 
-    # 1. 提取铭牌 (Machine Plate)
-    hatches = re.findall(r'8\[H(\d):(.*?)\]D', source)
-    logic = re.sub(r'8\[H\d:.*?\]D|//.*', '', source).strip()
+unsigned char m[65536] = {0};
+unsigned short ptr = 0;
 
-    # 2. 词法拆解 (Tokenization)
-    token_re = r'(~~|~)?(8[=\.]*[D>\}]|<[=\.]*8|8\*D|8\[=*\]D|8\{)(~~|~)?'
-    tokens = re.findall(token_re, logic)
+int main() {
+"""
+    # 核心形态学正则 (兼容即时喷射)
+    pattern = r'8[=.]*D~?|8[=]*>~?|<[=]*8~?|8\{|\}D|~'
+    tokens = re.findall(pattern, source_code)
 
-    # 3. 核心预处理：计算逻辑空腔跳转地址 (Jump Map)
-    jump_map = {}
-    stack = []
-    for i, (_, body, _) in enumerate(tokens):
-        if body == "8{":
-            stack.append(i)
-        elif body == "}D":
-            if not stack: raise SyntaxError("空腔闭合异常: }D 缺少匹配的 8{")
-            start = stack.pop()
-            jump_map[start] = i
-            jump_map[i] = start
+    for token in tokens:
+        # 判定是否带有即时喷射后缀
+        eject = token.endswith('~')
+        cmd = token[:-1] if eject else token
 
-    # 4. 生成 C 代码
-    c_code = [
-        "#include <stdio.h>\n#include <stdlib.h>",
-        "unsigned char m[65536] = {0};",
-        "unsigned int ptr = 0, pc = 0;",
-        "FILE* h[10] = {NULL}; int cur = 0;",
-        "int main() {"
-    ]
-
-    # 初始化轨道
-    for hid, path in hatches:
-        mode = "rb" if int(hid) == 0 else "wb"
-        c_code.append(f'    h[{hid}] = fopen("{path}", "{mode}");')
-
-    c_code.append(f"    while(pc < {len(tokens)}) {{")
-    c_code.append("        switch(pc) {")
-
-    # 5. 指令转译逻辑
-    for i, (prefix, body, suffix) in enumerate(tokens):
-        instr = []
+        if cmd.startswith('8') and cmd.endswith('D') and '{' not in cmd and '}' not in cmd:
+            # 赋值指令
+            eq_count = cmd.count('=')
+            dot_count = cmd.count('.')
+            val = eq_count - dot_count
+            if val > 0:
+                c_code += f"    m[ptr] += {val};\n"
+            elif val < 0:
+                c_code += f"    m[ptr] -= {abs(val)};\n"
         
-        # --- 前缀吸入 ---
-        if prefix == "~~":
-            instr.append("m[ptr] = (h[cur]) ? fgetc(h[cur]) : 0; if(m[ptr]==255) m[ptr]=0;")
-        elif prefix == "~":
-            instr.append("m[ptr] = getchar();")
+        elif cmd.startswith('8') and cmd.endswith('>'):
+            # 右向位移
+            dist = cmd.count('=') + 1
+            c_code += f"    ptr += {dist};\n"
+            
+        elif cmd.startswith('<') and cmd.endswith('8'):
+            # 左向回溯
+            dist = cmd.count('=') + 1
+            c_code += f"    ptr -= {dist};\n"
+            
+        elif cmd == '8{':
+            # 空腔开启
+            c_code += "    while(m[ptr]) {\n"
+            
+        elif cmd == '}D':
+            # 空腔封闭
+            c_code += "    }\n"
+            
+        elif cmd == '~':
+            # 单独吸入
+            c_code += "    m[ptr] = getchar();\n"
 
-        # --- 机体动作 ---
-        if "8[" in body: # 换挡
-            instr.append(f"cur = {body.count('=')};")
-        elif "8*" in body: # 动态弹射 (自举核心)
-            instr.append("pc = m[ptr]; continue;")
-        elif body == "8{": # 腔体开启
-            instr.append(f"if(!m[ptr]) {{ pc = {jump_map[i]}; continue; }}")
-        elif body == "}D": # 腔体封闭
-            instr.append(f"if(m[ptr]) {{ pc = {jump_map[i]}; continue; }}")
-        elif "8" in body and "D" in body: # 压力操作
-            v = body.count('=') - body.count('.')
-            if v != 0: instr.append(f"m[ptr] += {v};")
-        elif ">" in body: # 右推
-            instr.append(f"ptr = (ptr + {body.count('=')+1}) % 65536;")
-        elif "<" in body: # 左溯
-            instr.append(f"ptr = (ptr - {body.count('=')+1} + 65536) % 65536;")
+        # 触发即时喷射
+        if eject:
+            c_code += "    putchar(m[ptr]);\n"
 
-        # --- 后缀灌注 ---
-        if suffix == "~~":
-            instr.append("if(h[cur]) { fputc(m[ptr], h[cur]); fflush(h[cur]); }")
-        elif suffix == "~":
-            instr.append("putchar(m[ptr]);")
+    c_code += """
+    return 0;
+}
+"""
+    return c_code
 
-        c_code.append(f"            case {i}: {' '.join(instr)} pc++; break;")
+def main():
+    if len(sys.argv) < 2:
+        print("⚙️ Usage: python3 p8dforce.py <source.8d> [-c/--c-only]")
+        sys.exit(1)
 
-    c_code.append("        }\n    }")
-    c_code.append("    for(int i=0; i<10; i++) if(h[i]) fclose(h[i]);\n    return 0;\n}")
+    source_file = sys.argv[1]
+    c_only = len(sys.argv) > 2 and sys.argv[2] in ['-c', '--c-only']
+
+    try:
+        with open(source_file, 'r', encoding='utf-8') as f:
+            source = f.read()
+    except FileNotFoundError:
+        print(f"❌ Piston Jammed: File '{source_file}' not found.")
+        sys.exit(1)
+
+    # 1. 转译为 C 代码
+    c_code = compile_to_c(source)
+
+    # 如果用户只想要 C 源码（比如为了调试）
+    if c_only:
+        print(c_code)
+        sys.exit(0)
+
+    # 2. 自动嗅探工业级编译器 (优先 clang)
+    compiler = "clang" if shutil.which("clang") else ("gcc" if shutil.which("gcc") else None)
     
-    return "\n".join(c_code)
+    if not compiler:
+        print("⚠️ No clang or gcc detected! Ejecting C code instead:")
+        print(c_code)
+        sys.exit(1)
+
+    out_bin = source_file.rsplit('.', 1)[0]
+    # Windows 环境下加上 .exe 后缀
+    if sys.platform == "win32":
+        out_bin += ".exe"
+        
+    print(f"⚙️ Force Ejecting with {compiler} (-O3)...")
+    
+    # 3. 管道直压编译，不产生临时 .c 文件
+    process = subprocess.Popen(
+        [compiler, "-x", "c", "-O3", "-", "-o", out_bin],
+        stdin=subprocess.PIPE
+    )
+    process.communicate(input=c_code.encode('utf-8'))
+
+    if process.returncode == 0:
+        print(f"🚀 Success! Logic injected into: ./{out_bin}")
+    else:
+        print("❌ Compilation jammed.")
+        sys.exit(1)
 
 if __name__ == "__main__":
-    if len(sys.argv) > 1:
-        print(compile_p8d(sys.argv[1]))
+    main()
