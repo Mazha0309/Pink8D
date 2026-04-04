@@ -110,7 +110,7 @@ def main():
     process.communicate(input=c_code.encode('utf-8'))
 
     if process.returncode == 0:
-        print(f"🚀 Success! Logic injected into: ./{out_bin}")
+        print(f"🚀 Success! Logic injected into: {out_bin}")
     else:
         print("❌ Compilation jammed.")
         sys.exit(1)
