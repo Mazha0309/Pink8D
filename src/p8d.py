@@ -1,53 +1,41 @@
-import re
-import sys
+import re, sys
 
-def execute_p8d(source):
-    # 匹配 8...D~, 8===>~, <===8~, 8{, }D, ~
-    tokens = re.findall(r'8[=.]*D~?|8[=]*>~?|<[=]*8~?|8\{|\}D|~', source)
-    mem = [0] * 30000
-    ptr = 0
-    pc = 0
-    
-    # 预处理循环
-    stack = []
-    loops = {}
-    for i, t in enumerate(tokens):
-        if t == "8{": stack.append(i)
-        elif t == "}D":
-            start = stack.pop()
-            loops[start] = i
-            loops[i] = start
+def run_p8d(source_path):
+    with open(source_path, 'r') as f: source = f.read()
+    # 1. 轨道与逻辑分离
+    hatches = {int(h): open(p, "rb" if int(h)==0 else "wb") for h, p in re.findall(r'8\[H(\d):(.*?)\]D', source)}
+    logic = re.sub(r'8\[H\d:.*?\]D|//.*', '', source).strip()
+    tokens = re.findall(r'(~~|~)?(8[=\.]*[D>\}]|<[=\.]*8|8\*D|8\[=*\]D|8\{)(~~|~)?', logic)
 
+    # 2. 跳转预解析 (Jump Table)
+    stack, jmp = [], {}
+    for i, (_, body, _) in enumerate(tokens):
+        if body == "8{": stack.append(i)
+        elif body == "}D": start = stack.pop(); jmp[start], jmp[i] = i, start
+
+    # 3. 运行环境
+    m, ptr, pc, cur = [0]*65536, 0, 0, 0
     while pc < len(tokens):
-        t = tokens[pc]
-        has_eject = t.endswith('~')
-        cmd = t.rstrip('~')
+        pre, body, suf = tokens[pc]
+        # --- 吸入 ---
+        if pre == "~~": m[ptr] = hatches[cur].read(1)[0] if cur in hatches else 0
+        elif pre == "~": m[ptr] = ord(sys.stdin.read(1) or '\0')
+        if pre and m[ptr] == 255: m[ptr] = 0 # EOF 处理
 
-        # 位移逻辑
-        if cmd.startswith('8') and cmd.endswith('>'):
-            ptr = (ptr + cmd.count('=') + 1) % len(mem)
-            if has_eject: print(chr(mem[ptr]), end='', flush=True)
-        elif cmd.startswith('<') and cmd.endswith('8'):
-            ptr = (ptr - (cmd.count('=') + 1)) % len(mem)
-            if has_eject: print(chr(mem[ptr]), end='', flush=True)
-            
-        # 赋值逻辑
-        elif cmd.startswith('8') and cmd.endswith('D'):
-            core = cmd[1:-1]
-            mem[ptr] = (mem[ptr] + core.count('=') - core.count('.')) % 256
-            if has_eject: print(chr(mem[ptr]), end='', flush=True)
-            
-        # 基础 IO 与循环
-        elif t == "~":
-            char = sys.stdin.read(1)
-            mem[ptr] = ord(char) if char else 0
-        elif t == "8{":
-            if mem[ptr] == 0: pc = loops[pc]
-        elif t == "}D":
-            if mem[ptr] != 0: pc = loops[pc]
-            
+        # --- 动作 ---
+        if "8[" in body: cur = body.count('=')
+        elif "8*" in body: pc = m[ptr]; continue
+        elif body == "8{" and m[ptr] == 0: pc = jmp[pc]
+        elif body == "}D" and m[ptr] != 0: pc = jmp[pc]
+        elif "8" in body and "D" in body: m[ptr] = (m[ptr] + body.count('=') - body.count('.')) % 256
+        elif ">" in body: ptr = (ptr + body.count('=') + 1) % 65536
+        elif "<" in body: ptr = (ptr - body.count('=') - 1) % 65536
+
+        # --- 灌注 ---
+        if suf == "~~": 
+            if cur in hatches: hatches[cur].write(bytes([m[ptr]])); hatches[cur].flush()
+        elif suf == "~": sys.stdout.write(chr(m[ptr])); sys.stdout.flush()
         pc += 1
+    for f in hatches.values(): f.close()
 
-if __name__ == "__main__":
-    if len(sys.argv) > 1:
-        with open(sys.argv[1], 'r') as f: execute_p8d(f.read())
+if __name__ == "__main__": run_p8d(sys.argv[1])
